@@ -62,11 +62,8 @@ input::placeholder{color:var(--muted)}
   background:#000;
   border-radius:10px;
   overflow:hidden;
-  cursor:pointer;
-  /* Cresce mas nunca empurra a strip para fora */
   flex:1 1 0;
   min-height:0;
-  /* Mantém proporcional: máximo de 75% da altura disponível */
   max-height:75%;
 }
 .screen-main video{
@@ -80,11 +77,6 @@ input::placeholder{color:var(--muted)}
   background:rgba(0,0,0,.65);font-size:11px;
   padding:3px 9px;border-radius:5px;
   display:flex;align-items:center;gap:5px;z-index:2;
-}
-.screen-main .fullscreen-btn{
-  position:absolute;top:8px;right:8px;
-  background:rgba(0,0,0,.6);border:none;color:#fff;
-  font-size:14px;padding:5px 9px;border-radius:6px;cursor:pointer;z-index:2;
 }
 
 /* Strip de participantes: altura relativa à viewport */
@@ -145,31 +137,7 @@ input::placeholder{color:var(--muted)}
 }
 
 /* Fullscreen nativo: ocupa tudo */
-/* Fullscreen no elemento pai */
-.screen-main:-webkit-full-screen,
-.screen-main:fullscreen{
-  max-height:100vh;
-  border-radius:0;
-}
-.screen-main:-webkit-full-screen video,
-.screen-main:fullscreen video{
-  width:100%;
-  height:100%;
-  object-fit:contain;
-}
-/* Fullscreen direto no <video> — elimina distorção */
-#screen-video:-webkit-full-screen{
-  width:100vw !important;
-  height:100vh !important;
-  object-fit:contain !important;
-  background:#000;
-}
-#screen-video:fullscreen{
-  width:100vw !important;
-  height:100vh !important;
-  object-fit:contain !important;
-  background:#000;
-}
+/* fullscreen removido — telão sempre visível */
 
 /* Modo normal sem screen: grid normal */
 .tile{background:var(--card);border-radius:10px;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:90px;border:2px solid transparent;transition:border-color .3s}
@@ -304,7 +272,7 @@ select{background:var(--card);border:1px solid var(--border);color:var(--text);b
 <!-- LOBBY -->
 <div id="lobby">
 <div class="card">
-  <div class="logo"><div class="logo-icon">🎙️</div><span class="logo-name">VozChat</span><span style="font-size:11px;color:var(--muted);background:var(--card);border:1px solid var(--border);padding:2px 8px;border-radius:12px;margin-left:4px;font-weight:600">v0.01</span></div>
+  <div class="logo"><div class="logo-icon">🎙️</div><span class="logo-name">VozChat</span><span style="font-size:11px;color:var(--muted);background:var(--card);border:1px solid var(--border);padding:2px 8px;border-radius:12px;margin-left:4px;font-weight:600">v0.04</span></div>
   <div class="subtitle">Chamada de voz e vídeo direto no navegador — sem instalar nada.</div>
 
   <div>
@@ -646,7 +614,14 @@ async function flushIce(remoteId) {
 }
 
 async function createPeerConnection(remoteId, initiator) {
-  if (peers[remoteId]) return peers[remoteId].pc;
+  // Se já existe uma PC para esse peer mas está fechada/falha, destrói antes
+  if (peers[remoteId]) {
+    const state = peers[remoteId].pc.connectionState;
+    if (state === "connected" || state === "connecting") return peers[remoteId].pc;
+    // PC morta — destrói e recria
+    try { peers[remoteId].pc.close(); } catch (_) {}
+    delete peers[remoteId];
+  }
 
   const pc = new RTCPeerConnection(ICE);
   const remoteStream = new MediaStream();
@@ -671,7 +646,13 @@ async function createPeerConnection(remoteId, initiator) {
   const videoTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
   peers[remoteId].videoSender = videoTransceiver.sender;
 
-  if (cameraTrack && !screenOn) {
+  // Se tiver tela compartilhando, manda a track de tela para o novo peer
+  if (screenOn && screenStream) {
+    const scrTrack = screenStream.getVideoTracks()[0];
+    if (scrTrack && scrTrack.readyState !== "ended") {
+      await peers[remoteId].videoSender.replaceTrack(scrTrack);
+    }
+  } else if (cameraTrack && !screenOn) {
     await peers[remoteId].videoSender.replaceTrack(cameraTrack);
   }
 
@@ -711,10 +692,18 @@ async function createPeerConnection(remoteId, initiator) {
     const state = pc.connectionState;
     dbg(remoteId.slice(0, 8) + ": " + state);
     if (state === "failed") {
-      // Tenta ICE restart apenas para conexões que falharem.
       if (initiator) restartPeer(remoteId).catch(() => {});
+      else removePeer(remoteId); // quem não é initiator também remove
     }
-    if (state === "closed") removePeer(remoteId);
+    if (state === "closed" || state === "disconnected") {
+      // Pequeno delay: "disconnected" pode ser temporário
+      setTimeout(() => {
+        const p = peers[remoteId];
+        if (p && (p.pc.connectionState === "closed" || p.pc.connectionState === "disconnected" || p.pc.connectionState === "failed")) {
+          removePeer(remoteId);
+        }
+      }, 4000);
+    }
   };
 
   if (initiator) {
@@ -882,12 +871,31 @@ function addTile(pid, stream, m) {
 }
 
 function removePeer(pid) {
+  // Remove tile do grid normal
   $("tile-" + pid)?.remove();
+
+  // Remove tile da strip (quando há screen share ativa)
+  const strip = $("participants-strip");
+  if (strip) {
+    const tileInStrip = strip.querySelector("#tile-" + CSS.escape(pid));
+    tileInStrip?.remove();
+  }
+
   if (peers[pid]) {
     try { peers[pid].pc.close(); } catch (_) {}
     delete peers[pid];
   }
   delete members[pid];
+
+  // Se o peer que saiu estava compartilhando tela, fecha o layout
+  if (remoteScreenStreams[pid]) {
+    const screenVid = $("screen-video");
+    if (screenVid) { screenVid.pause(); screenVid.srcObject = null; screenVid.load(); }
+    delete remoteScreenStreams[pid];
+    if (!screenOn && Object.keys(remoteScreenStreams).length === 0) hideScreenLayout();
+  }
+
+  toast("🔴 " + (members[pid]?.name || "Participante") + " saiu");
   updateSidebar();
   updateCount();
   updateGrid();
@@ -1010,11 +1018,6 @@ function stopScreen() {
     screenVid.load();
   }
 
-  // Sai do fullscreen se estiver ativo
-  if (document.fullscreenElement) {
-    document.exitFullscreen().catch(() => {});
-  }
-
   const replacement = camOn ? cameraTrack : null;
   for (const p of Object.values(peers)) if (p.videoSender) p.videoSender.replaceTrack(replacement).catch(() => {});
   hideScreenLayout();
@@ -1036,13 +1039,9 @@ function showScreenLayout(stream, label, fpsVal, isLocal) {
   container.className = "screen-main";
   container.innerHTML = 
     '<video id="screen-video" autoplay playsinline muted></video>' +
-    '<div class="scrbadge">🖥️ ' + label + ' <span class="fpstag">' + (fpsVal||fps) + ' FPS</span></div>' +
-    '<button class="fullscreen-btn" onclick="toggleFullscreen()" title="Tela cheia">⛶</button>';
+    '<div class="scrbadge">🖥️ ' + label + (fpsVal ? ' <span class="fpstag">' + fpsVal + ' FPS</span>' : '') + '</div>';
   container.querySelector("video").srcObject = stream;
   container.querySelector("video").play().catch(() => {});
-
-  // Duplo clique = fullscreen
-  container.querySelector("video").ondblclick = () => toggleFullscreen();
 
   // Reorganiza: screen em cima, participantes em tira embaixo
   varea.classList.add("has-screen");
@@ -1091,33 +1090,7 @@ function hideScreenLayout() {
   updateGrid();
 }
 
-function toggleFullscreen() {
-  const container = $("screen-main-container");
-  if (!container) return;
-  const vid = container.querySelector("video");
-
-  if (!document.fullscreenElement) {
-    // Pede fullscreen no <video> diretamente — evita distorção
-    const el = vid || container;
-    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
-    if (req) req.call(el).catch(() => {});
-    container.querySelector(".fullscreen-btn").textContent = "✕";
-  } else {
-    const exit = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
-    if (exit) exit.call(document).catch(() => {});
-    container.querySelector(".fullscreen-btn").textContent = "⛶";
-  }
-}
-
-// Detecta qualquer evento de saída de fullscreen (cross-browser)
-["fullscreenchange","webkitfullscreenchange","mozfullscreenchange","MSFullscreenChange"].forEach(ev => {
-  document.addEventListener(ev, () => {
-    const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement ||
-                    document.mozFullScreenElement || document.msFullscreenElement);
-    const btn = document.querySelector(".fullscreen-btn");
-    if (btn) btn.textContent = isFs ? "✕" : "⛶";
-  });
-});
+// fullscreen removido — telão sempre visível
 
 function leaveCall() {
   sendSignal({ type: "user-left", from: myId, room: myRoom });
