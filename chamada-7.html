@@ -145,6 +145,7 @@ input::placeholder{color:var(--muted)}
 }
 
 /* Fullscreen nativo: ocupa tudo */
+/* Fullscreen no elemento pai */
 .screen-main:-webkit-full-screen,
 .screen-main:fullscreen{
   max-height:100vh;
@@ -152,7 +153,22 @@ input::placeholder{color:var(--muted)}
 }
 .screen-main:-webkit-full-screen video,
 .screen-main:fullscreen video{
+  width:100%;
+  height:100%;
   object-fit:contain;
+}
+/* Fullscreen direto no <video> — elimina distorção */
+#screen-video:-webkit-full-screen{
+  width:100vw !important;
+  height:100vh !important;
+  object-fit:contain !important;
+  background:#000;
+}
+#screen-video:fullscreen{
+  width:100vw !important;
+  height:100vh !important;
+  object-fit:contain !important;
+  background:#000;
 }
 
 /* Modo normal sem screen: grid normal */
@@ -608,8 +624,11 @@ async function handleSignal(msg) {
       }
     } else {
       toast("🖥️ " + peerName + " parou de compartilhar");
+      // Zera o stream do container antes de fechar — elimina freeze remoto
+      const screenVid = $("screen-video");
+      if (screenVid) { screenVid.pause(); screenVid.srcObject = null; screenVid.load(); }
       delete remoteScreenStreams[msg.from];
-      // Só fecha se não houver outra screen share ativa
+      // Só fecha o layout se não houver outra screen share ativa
       if (!screenOn && Object.keys(remoteScreenStreams).length === 0) {
         hideScreenLayout();
       }
@@ -977,8 +996,25 @@ async function toggleScreen() {
 }
 
 function stopScreen() {
-  screenStream?.getTracks().forEach(t => t.stop());
-  screenStream = null;
+  // Para todas as tracks ANTES de qualquer outra coisa
+  if (screenStream) {
+    screenStream.getTracks().forEach(t => t.stop());
+    screenStream = null;
+  }
+
+  // Zera o srcObject do vídeo — elimina o freeze do frame congelado
+  const screenVid = $("screen-video");
+  if (screenVid) {
+    screenVid.pause();
+    screenVid.srcObject = null;
+    screenVid.load();
+  }
+
+  // Sai do fullscreen se estiver ativo
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
+
   const replacement = camOn ? cameraTrack : null;
   for (const p of Object.values(peers)) if (p.videoSender) p.videoSender.replaceTrack(replacement).catch(() => {});
   hideScreenLayout();
@@ -1034,6 +1070,16 @@ function hideScreenLayout() {
   const container = $("screen-main-container");
   const strip = $("participants-strip");
 
+  // Zera e destrói o vídeo antes de remover o container — elimina freeze para quem recebe
+  if (container) {
+    const vid = container.querySelector("video");
+    if (vid) {
+      vid.pause();
+      vid.srcObject = null;
+      vid.load();
+    }
+  }
+
   // Volta tiles para o grid
   if (strip) {
     Array.from(strip.children).forEach(tile => grid.appendChild(tile));
@@ -1048,23 +1094,29 @@ function hideScreenLayout() {
 function toggleFullscreen() {
   const container = $("screen-main-container");
   if (!container) return;
+  const vid = container.querySelector("video");
+
   if (!document.fullscreenElement) {
-    container.requestFullscreen().catch(() => {});
-    container.classList.add("fullscreen-active");
+    // Pede fullscreen no <video> diretamente — evita distorção
+    const el = vid || container;
+    const req = el.requestFullscreen || el.webkitRequestFullscreen || el.mozRequestFullScreen || el.msRequestFullscreen;
+    if (req) req.call(el).catch(() => {});
     container.querySelector(".fullscreen-btn").textContent = "✕";
   } else {
-    document.exitFullscreen().catch(() => {});
-    container.classList.remove("fullscreen-active");
+    const exit = document.exitFullscreen || document.webkitExitFullscreen || document.mozCancelFullScreen || document.msExitFullscreen;
+    if (exit) exit.call(document).catch(() => {});
     container.querySelector(".fullscreen-btn").textContent = "⛶";
   }
 }
 
-document.addEventListener("fullscreenchange", () => {
-  if (!document.fullscreenElement) {
+// Detecta qualquer evento de saída de fullscreen (cross-browser)
+["fullscreenchange","webkitfullscreenchange","mozfullscreenchange","MSFullscreenChange"].forEach(ev => {
+  document.addEventListener(ev, () => {
+    const isFs = !!(document.fullscreenElement || document.webkitFullscreenElement ||
+                    document.mozFullScreenElement || document.msFullscreenElement);
     const btn = document.querySelector(".fullscreen-btn");
-    if (btn) { btn.textContent = "⛶"; }
-    $("screen-main-container")?.classList.remove("fullscreen-active");
-  }
+    if (btn) btn.textContent = isFs ? "✕" : "⛶";
+  });
 });
 
 function leaveCall() {
