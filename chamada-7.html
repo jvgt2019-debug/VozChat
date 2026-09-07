@@ -47,21 +47,113 @@ input::placeholder{color:var(--muted)}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .room-tag{font-size:13px;color:var(--muted);background:var(--surface);padding:3px 10px;border-radius:20px}
 #timer{font-size:13px;color:var(--muted);font-variant-numeric:tabular-nums}
-.main{flex:1;display:flex;overflow:hidden}
-.varea{flex:1;background:var(--bg);padding:10px;display:flex;flex-direction:column;gap:8px;overflow:hidden}
+.main{flex:1;display:flex;overflow:hidden;min-height:0}
+.varea{flex:1;background:var(--bg);padding:10px;display:flex;flex-direction:column;gap:8px;overflow:hidden;min-height:0;min-width:0}
 .grid{flex:1;display:grid;gap:8px}
 .grid.g1{grid-template-columns:1fr}
 .grid.g2{grid-template-columns:1fr 1fr}
 
-/* Modo com screen share: layout vertical — tela em cima, participantes embaixo */
+/* ── SCREEN SHARE LAYOUT — adapta à resolução do dispositivo ── */
 .varea.has-screen{display:flex;flex-direction:column;gap:8px}
-.screen-main{flex:1;position:relative;background:#000;border-radius:10px;overflow:hidden;min-height:0;cursor:pointer}
-.screen-main video{width:100%;height:100%;object-fit:contain;display:block}
-.screen-main .scrbadge{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.65);font-size:11px;padding:3px 9px;border-radius:5px;display:flex;align-items:center;gap:5px;z-index:2}
-.screen-main .fullscreen-btn{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.6);border:none;color:#fff;font-size:14px;padding:5px 9px;border-radius:6px;cursor:pointer;z-index:2}
-.screen-main.fullscreen-active video{object-fit:contain}
-.participants-strip{display:flex;gap:8px;height:130px;flex-shrink:0}
-.participants-strip .tile{flex:1;min-width:0;min-height:0;height:100%}
+
+/* Tela principal: ocupa o espaço disponível respeitando o aspect-ratio */
+.screen-main{
+  position:relative;
+  background:#000;
+  border-radius:10px;
+  overflow:hidden;
+  cursor:pointer;
+  /* Cresce mas nunca empurra a strip para fora */
+  flex:1 1 0;
+  min-height:0;
+  /* Mantém proporcional: máximo de 75% da altura disponível */
+  max-height:75%;
+}
+.screen-main video{
+  width:100%;
+  height:100%;
+  object-fit:contain;
+  display:block;
+}
+.screen-main .scrbadge{
+  position:absolute;top:8px;left:8px;
+  background:rgba(0,0,0,.65);font-size:11px;
+  padding:3px 9px;border-radius:5px;
+  display:flex;align-items:center;gap:5px;z-index:2;
+}
+.screen-main .fullscreen-btn{
+  position:absolute;top:8px;right:8px;
+  background:rgba(0,0,0,.6);border:none;color:#fff;
+  font-size:14px;padding:5px 9px;border-radius:6px;cursor:pointer;z-index:2;
+}
+
+/* Strip de participantes: altura relativa à viewport */
+.participants-strip{
+  display:flex;
+  gap:8px;
+  /* clamp: mínimo 80px, ideal 18vh, máximo 160px */
+  height:clamp(80px, 18vh, 160px);
+  flex-shrink:0;
+  overflow-x:auto;
+  overflow-y:hidden;
+}
+.participants-strip .tile{
+  /* largura mínima para não ficar espremido */
+  flex:0 0 clamp(100px, 22vw, 200px);
+  min-width:0;
+  min-height:0;
+  height:100%;
+  border-radius:8px;
+}
+/* Quando há só 1 ou 2 participantes, distribui igualmente */
+.participants-strip:has(.tile:only-child) .tile,
+.participants-strip:has(.tile:nth-child(2):last-child) .tile{
+  flex:1;
+}
+
+/* ── RESPONSIVO: mobile pequeno (≤480px) ── */
+@media (max-width:480px){
+  .screen-main{ max-height:60%; }
+  .participants-strip{
+    height:clamp(70px,15vh,110px);
+  }
+  .participants-strip .tile{
+    flex:0 0 clamp(80px,28vw,130px);
+  }
+}
+
+/* ── RESPONSIVO: tablet portrait (481–768px) ── */
+@media (min-width:481px) and (max-width:768px){
+  .screen-main{ max-height:68%; }
+  .participants-strip{
+    height:clamp(80px,16vh,140px);
+  }
+  .participants-strip .tile{
+    flex:0 0 clamp(100px,24vw,170px);
+  }
+}
+
+/* ── RESPONSIVO: desktop grande (≥1400px) ── */
+@media (min-width:1400px){
+  .screen-main{ max-height:80%; }
+  .participants-strip{
+    height:clamp(120px,14vh,200px);
+  }
+  .participants-strip .tile{
+    flex:0 0 clamp(150px,14vw,220px);
+  }
+}
+
+/* Fullscreen nativo: ocupa tudo */
+.screen-main:-webkit-full-screen,
+.screen-main:fullscreen{
+  max-height:100vh;
+  border-radius:0;
+}
+.screen-main:-webkit-full-screen video,
+.screen-main:fullscreen video{
+  object-fit:contain;
+}
 
 /* Modo normal sem screen: grid normal */
 .tile{background:var(--card);border-radius:10px;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:90px;border:2px solid transparent;transition:border-color .3s}
@@ -116,35 +208,68 @@ select{background:var(--card);border:1px solid var(--border);color:var(--text);b
     padding: 24px;
   }
 
+  /* Em mobile: sidebar vai para baixo da área de vídeo */
   .main {
     flex-direction: column;
   }
 
   .sidebar {
     width: 100%;
-    max-height: 125px;
+    max-height: 100px;
     border-left: 0;
     border-top: 1px solid var(--bg);
+    flex-shrink: 0;
+  }
+
+  /* Com screen share em mobile: sidebar fica colapsada (só ícones) */
+  .has-screen ~ * .sidebar,
+  .varea.has-screen + .sidebar {
+    max-height: 72px;
   }
 
   .sb-list {
     flex-direction: row;
     overflow-x: auto;
+    overflow-y: hidden;
+    padding: 4px 6px;
   }
 
   .mb {
-    min-width: 125px;
+    min-width: 110px;
+    flex-shrink: 0;
   }
 
   .ctrls {
-    padding: 10px 6px;
-    gap: 7px;
+    padding: 8px 4px;
+    gap: 5px;
   }
 
   .circ {
-    width: 40px;
-    height: 40px;
-    font-size: 18px;
+    width: 38px;
+    height: 38px;
+    font-size: 17px;
+  }
+
+  .clbl {
+    font-size: 9px;
+  }
+
+  /* Screen share em mobile: strip horizontal compacta */
+  .participants-strip {
+    height: clamp(65px, 14vw, 100px) !important;
+  }
+
+  .participants-strip .tile {
+    flex: 0 0 clamp(75px, 25vw, 120px) !important;
+  }
+
+  /* Topbar mais compacta em mobile */
+  .topbar {
+    padding: 8px 10px;
+  }
+
+  #timer {
+    font-size: 12px;
   }
 }
 
