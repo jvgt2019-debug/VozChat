@@ -52,9 +52,20 @@ input::placeholder{color:var(--muted)}
 .grid{flex:1;display:grid;gap:8px}
 .grid.g1{grid-template-columns:1fr}
 .grid.g2{grid-template-columns:1fr 1fr}
+
+/* Modo com screen share: layout vertical — tela em cima, participantes embaixo */
+.varea.has-screen{display:flex;flex-direction:column;gap:8px}
+.screen-main{flex:1;position:relative;background:#000;border-radius:10px;overflow:hidden;min-height:0;cursor:pointer}
+.screen-main video{width:100%;height:100%;object-fit:contain;display:block}
+.screen-main .scrbadge{position:absolute;top:8px;left:8px;background:rgba(0,0,0,.65);font-size:11px;padding:3px 9px;border-radius:5px;display:flex;align-items:center;gap:5px;z-index:2}
+.screen-main .fullscreen-btn{position:absolute;top:8px;right:8px;background:rgba(0,0,0,.6);border:none;color:#fff;font-size:14px;padding:5px 9px;border-radius:6px;cursor:pointer;z-index:2}
+.screen-main.fullscreen-active video{object-fit:contain}
+.participants-strip{display:flex;gap:8px;height:130px;flex-shrink:0}
+.participants-strip .tile{flex:1;min-width:0;min-height:0;height:100%}
+
+/* Modo normal sem screen: grid normal */
 .tile{background:var(--card);border-radius:10px;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:90px;border:2px solid transparent;transition:border-color .3s}
 .tile.talk{border-color:var(--green)}
-.tile.scr{grid-column:1/-1}
 .tile video{width:100%;height:100%;object-fit:cover;position:absolute}
 .tile audio{display:none}
 .av{width:54px;height:54px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700;color:#fff}
@@ -152,7 +163,7 @@ select{background:var(--card);border:1px solid var(--border);color:var(--text);b
 <!-- LOBBY -->
 <div id="lobby">
 <div class="card">
-  <div class="logo"><div class="logo-icon">🎙️</div><span class="logo-name">VozChat</span></div>
+  <div class="logo"><div class="logo-icon">🎙️</div><span class="logo-name">VozChat</span><span style="font-size:11px;color:var(--muted);background:var(--card);border:1px solid var(--border);padding:2px 8px;border-radius:12px;margin-left:4px;font-weight:600">v0.01</span></div>
   <div class="subtitle">Chamada de voz e vídeo direto no navegador — sem instalar nada.</div>
 
   <div>
@@ -195,7 +206,7 @@ select{background:var(--card);border:1px solid var(--border);color:var(--text);b
     <span class="room-tag" id="pcount">1 participante</span>
   </div>
   <div class="main">
-    <div class="varea">
+    <div class="varea" id="varea">
       <div class="grid g1" id="grid"></div>
     </div>
     <div class="sidebar">
@@ -282,6 +293,7 @@ let timerRef = null;
 // remoteId -> { pc, videoSender, remoteStream, pendingIce, makingOffer }
 const peers = {};
 const members = {};
+const remoteScreenStreams = {}; // pid -> MediaStream da tela remota
 
 const $ = id => document.getElementById(id);
 const rand = () => Math.random().toString(36).slice(2, 8).toUpperCase();
@@ -456,8 +468,27 @@ async function handleSignal(msg) {
   }
 
   if (msg.type === "screen") {
-    toast((members[msg.from]?.name || "Alguém") +
-      (msg.on ? " está compartilhando a tela" : " parou de compartilhar a tela"));
+    const peerName = members[msg.from]?.name || "Alguém";
+    if (msg.on) {
+      toast("🖥️ " + peerName + " está compartilhando a tela");
+      // Pega o stream remoto do peer
+      const p = peers[msg.from];
+      if (p && p.remoteStream) {
+        const videoTracks = p.remoteStream.getVideoTracks().filter(t => t.readyState !== "ended");
+        if (videoTracks.length > 0) {
+          const remoteScreenStream = new MediaStream(videoTracks);
+          remoteScreenStreams[msg.from] = remoteScreenStream;
+          showScreenLayout(remoteScreenStream, peerName + " — tela", 0, false);
+        }
+      }
+    } else {
+      toast("🖥️ " + peerName + " parou de compartilhar");
+      delete remoteScreenStreams[msg.from];
+      // Só fecha se não houver outra screen share ativa
+      if (!screenOn && Object.keys(remoteScreenStreams).length === 0) {
+        hideScreenLayout();
+      }
+    }
   }
 }
 
@@ -720,7 +751,7 @@ function removePeer(pid) {
 
 function updateGrid() {
   const grid = $("grid");
-  const n = grid.querySelectorAll(".tile:not(.scr)").length;
+  const n = grid.querySelectorAll(".tile").length;
   grid.className = "grid " + (n <= 1 ? "g1" : "g2");
 }
 
@@ -808,28 +839,108 @@ async function toggleScreen() {
       const track = screenStream.getVideoTracks()[0];
       for (const p of Object.values(peers)) if (p.videoSender) await p.videoSender.replaceTrack(track);
 
-      const grid = $("grid");
-      $("tile-scr")?.remove();
-      const div = document.createElement("div"); div.className = "tile scr"; div.id = "tile-scr";
-      div.innerHTML = '<video autoplay playsinline muted></video><div class="scrbadge">🖥️ Sua tela <span class="fpstag">' + fps + " FPS</span></div>";
-      const video = div.querySelector("video"); video.srcObject = screenStream; video.play().catch(() => {}); grid.appendChild(div);
+      showScreenLayout(screenStream, "Sua tela", fps, true);
 
-      track.onended = () => { if (screenOn) toggleScreen(); };
+      track.onended = () => { if (screenOn) stopScreen(); };
       screenOn = true;
       $("scrBtn").className = "circ on"; $("scrLbl").textContent = "Parar";
       sendSignal({ type: "screen", from: myId, room: myRoom, on: true });
     } catch (_) { toast("Transmissão cancelada"); }
   } else {
-    screenStream?.getTracks().forEach(t => t.stop());
-    const replacement = camOn ? cameraTrack : null;
-    for (const p of Object.values(peers)) if (p.videoSender) await p.videoSender.replaceTrack(replacement).catch(() => {});
-    $("tile-scr")?.remove();
-    screenOn = false;
-    $("scrBtn").className = "circ off"; $("scrLbl").textContent = "Tela";
-    sendSignal({ type: "screen", from: myId, room: myRoom, on: false });
-    updateGrid();
+    stopScreen();
   }
 }
+
+function stopScreen() {
+  screenStream?.getTracks().forEach(t => t.stop());
+  screenStream = null;
+  const replacement = camOn ? cameraTrack : null;
+  for (const p of Object.values(peers)) if (p.videoSender) p.videoSender.replaceTrack(replacement).catch(() => {});
+  hideScreenLayout();
+  screenOn = false;
+  $("scrBtn").className = "circ off"; $("scrLbl").textContent = "Tela";
+  sendSignal({ type: "screen", from: myId, room: myRoom, on: false });
+}
+
+function showScreenLayout(stream, label, fpsVal, isLocal) {
+  const varea = $("varea");
+  const grid = $("grid");
+
+  // Remove screen main antigo se existir
+  $("screen-main-container")?.remove();
+
+  // Cria container da tela principal
+  const container = document.createElement("div");
+  container.id = "screen-main-container";
+  container.className = "screen-main";
+  container.innerHTML = 
+    '<video id="screen-video" autoplay playsinline muted></video>' +
+    '<div class="scrbadge">🖥️ ' + label + ' <span class="fpstag">' + (fpsVal||fps) + ' FPS</span></div>' +
+    '<button class="fullscreen-btn" onclick="toggleFullscreen()" title="Tela cheia">⛶</button>';
+  container.querySelector("video").srcObject = stream;
+  container.querySelector("video").play().catch(() => {});
+
+  // Duplo clique = fullscreen
+  container.querySelector("video").ondblclick = () => toggleFullscreen();
+
+  // Reorganiza: screen em cima, participantes em tira embaixo
+  varea.classList.add("has-screen");
+
+  // Move tiles para uma strip
+  let strip = $("participants-strip");
+  if (!strip) {
+    strip = document.createElement("div");
+    strip.id = "participants-strip";
+    strip.className = "participants-strip";
+  }
+
+  // Move todos os tiles para a strip
+  Array.from(grid.children).forEach(tile => strip.appendChild(tile));
+
+  // Limpa o grid e insere o novo layout
+  grid.style.display = "none";
+  varea.insertBefore(container, grid);
+  varea.insertBefore(strip, grid);
+}
+
+function hideScreenLayout() {
+  const varea = $("varea");
+  const grid = $("grid");
+  const container = $("screen-main-container");
+  const strip = $("participants-strip");
+
+  // Volta tiles para o grid
+  if (strip) {
+    Array.from(strip.children).forEach(tile => grid.appendChild(tile));
+    strip.remove();
+  }
+  container?.remove();
+  grid.style.display = "";
+  varea.classList.remove("has-screen");
+  updateGrid();
+}
+
+function toggleFullscreen() {
+  const container = $("screen-main-container");
+  if (!container) return;
+  if (!document.fullscreenElement) {
+    container.requestFullscreen().catch(() => {});
+    container.classList.add("fullscreen-active");
+    container.querySelector(".fullscreen-btn").textContent = "✕";
+  } else {
+    document.exitFullscreen().catch(() => {});
+    container.classList.remove("fullscreen-active");
+    container.querySelector(".fullscreen-btn").textContent = "⛶";
+  }
+}
+
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement) {
+    const btn = document.querySelector(".fullscreen-btn");
+    if (btn) { btn.textContent = "⛶"; }
+    $("screen-main-container")?.classList.remove("fullscreen-active");
+  }
+});
 
 function leaveCall() {
   sendSignal({ type: "user-left", from: myId, room: myRoom });
